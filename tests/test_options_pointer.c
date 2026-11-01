@@ -28,7 +28,10 @@ static uint64_t activated_node;
 static uint64_t quest_screen,quest_widget,quest_control,quest_nodes[2],quest_icons[4];
 static uint64_t quest_master;
 static unsigned quest_selections,quest_categories_clicked,last_category;
-static unsigned page_changes;
+static unsigned page_changes,dlc_pages;
+static uint64_t dlc_test_list;
+static uint64_t wheel_quest_list;
+static unsigned quest_view_scrolls;
 static uint64_t quick_test_screen,quick_test_list;
 static unsigned quick_test_moves;
 static uint64_t navigation;
@@ -40,6 +43,13 @@ void guest_call(Cpu *cpu,uint64_t address){
     if(address==0x7000e30700ull){actions++;last_action=LD32(LD64(cpu->x[0])+0x36c0);}
     else if(address==0x7000e2eed8ull)refreshes++;
     else if(address==0x7000d671d4ull)scroll_updates++;
+    else if(address==0x7000d6e8e0ull){
+        assert(cpu->x[0]==wheel_quest_list&&cpu->x[1]==2);
+        float delta;memcpy(&delta,&cpu->v[0],4);quest_view_scrolls++;
+        *(float*)(wheel_quest_list+0x2d4)+=delta;
+        *(float*)(wheel_quest_list+0x2c4)=*(float*)(wheel_quest_list+0x2d4);
+        cpu->x[0]=0xdead; // the caller's CPU must be restored
+    }
     else if(address==0x7000f6e2c8ull){assert(LD8(cpu->x[0]+0xfc)==1);cpu->x[0]=0;}
     else if(address==0x7000f57da8ull){
         activations++;activated_node=cpu->x[1];ST64(cpu->x[0]+0x48,cpu->x[1]);
@@ -53,7 +63,8 @@ void guest_call(Cpu *cpu,uint64_t address){
         cpu->x[0]=cpu->x[0]!=quest_widget?UINT32_MAX:
             cpu->x[1]==quest_nodes[0]?0:cpu->x[1]==quest_nodes[1]?1:UINT32_MAX;
     }else if(address==0x7000d6c54cull){
-        assert(quick_test_list&&cpu->x[0]==quick_test_list&&cpu->x[1]<3);quick_test_moves++;
+        if(dlc_test_list&&cpu->x[0]==dlc_test_list){dlc_pages++;ST32(dlc_test_list+0x2dc,cpu->x[1]);}
+        else {assert(quick_test_list&&cpu->x[0]==quick_test_list&&cpu->x[1]<3);quick_test_moves++;}
     }else if(address==0x7000e2785cull){
         assert(cpu->x[0]==quick_test_screen&&cpu->x[1]<3);
         ST32(quick_test_screen+0x387c,LD32(quick_test_screen+0x3884+4*cpu->x[1]));
@@ -498,7 +509,105 @@ int main(void) {
     rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);assert(activated_node==other);
     g_settings.pc_cursor=false;pc_cursor_frame();assert(!pc_cursor_active());
     g_settings.pc_cursor=true;ST64(sa+8*0x30,0);pc_cursor_frame();assert(!game_over_screen&&!pc_cursor_active());
-    puts("PASS: Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, setting gate and reboot reset (synthetic host state).");
+    // DLC pages own input while the title remains underneath. Wheel is
+    // consumed once, stays within the native page count, and yields to keys.
+    pc_cursor_reset();ST64(sa+8*0x3f,screen);ST64(screen,0x7001ced520ull);
+    ST8(screen+0xfe,2);ST16(screen+0x2aa,0x40);ST32(screen+0x38c0,1);
+    dlc_test_list=GUEST_LO+0xb000;ST64(screen+0x3628,dlc_test_list);
+    ST64(dlc_test_list,0x7001cdbb58ull);ST32(dlc_test_list+0x2ac,10);
+    ST32(dlc_test_list+0x2dc,0);ST64(screen+0x30,0);
+    pc_cursor_frame();assert(dlc_screen==screen&&pc_cursor_active());
+    position_inside=true;pointer_keyboard_input=false;wheel=-1;frame++;
+    dlc_pointer(&cpu);assert(dlc_pages==1&&LD32(dlc_test_list+0x2dc)==1);
+    dlc_pointer(&cpu);assert(dlc_pages==1);
+    wheel=-100;frame++;dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==9);
+    wheel=100;frame++;dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==0);
+    pointer_keyboard_input=true;wheel=-1;frame++;dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==0);
+    pointer_keyboard_input=false;wheel=0;gesture_down=gesture_dragged=true;
+    gesture_delta[1]=81;frame++;dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==1);
+    ST32(screen+0x38c0,2);wheel=-1;frame++;dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==1);
+    // Hit the game's own arrow and footer layouts, using their measured
+    // layout coordinates. Credits is deferred to the screen's normal tick.
+    ST32(screen+0x38c0,1);wheel=0;gesture_down=gesture_dragged=false;
+    uint64_t dl=GUEST_LO+0xe200,dp=GUEST_LO+0xe400;
+    ST64(screen+0x30,dl);ST64(dl+0x18,dp);ST64(dp+0x28,dp+0x20);
+    strcpy((char*)(uintptr_t)(dp+0xb8),"Pa_ArrowD_00");
+    *(float*)(dp+0x70)=*(float*)(dp+0x84)=1;
+    *(float*)(dp+0x74)=*(float*)(dp+0x80)=0;
+    *(float*)(dp+0x7c)=166;*(float*)(dp+0x8c)=-187.2f;
+    *(float*)(dp+0x50)=36;*(float*)(dp+0x54)=64;
+    point[0]=166;point[1]=-187.2f;click_pending=true;frame++;
+    dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==2&&!click_pending);
+    strcpy((char*)(uintptr_t)(dp+0xb8),"Pa_GuideY_00");
+    *(float*)(dp+0x7c)=559;*(float*)(dp+0x8c)=-285;
+    *(float*)(dp+0x50)=440;*(float*)(dp+0x54)=40;
+    point[0]=550;point[1]=-285;click_pending=true;frame++;
+    dlc_pointer(&cpu);assert(LD8(screen+0x38c4)==1&&!click_pending);
+    strcpy((char*)(uintptr_t)(dp+0xb8),"Pa_GuideB_00");
+    *(float*)(dp+0x8c)=-318;point[1]=-318;click_pending=true;frame++;
+    dlc_pointer(&cpu);assert((pc_cursor_buttons(0)&2)&&!click_pending);
+    dlc_back_until=now+100;assert(pc_cursor_buttons(0)&2);
+    pc_cursor_reset();assert(!dlc_screen&&!dlc_back_until&&dlc_frame==UINT64_MAX);
+    // Adventure Log scrolls its visible mission viewport. The registry
+    // contains both its category strip and a hidden list for another tab.
+    uint64_t qm=GUEST_LO+0x4000,category_list=GUEST_LO+0x5000;
+    uint64_t qr=GUEST_LO+0xd000,qhidden=GUEST_LO+0xa000,qcols=GUEST_LO+0xc000,qcol=GUEST_LO+0xc200;
+    wheel_quest_list=GUEST_LO+0xb000;
+    ST64(screen,0x7001cf9ad8ull);ST8(screen+0xfe,2);ST32(screen+0x3a48,1);
+    ST32(screen+0x388,3);ST64(screen+0x390,qr);ST64(screen+0x3bb0,qm);ST64(qm+0x300,category_list);
+    ST64(qr,category_list);ST64(qr+8,qhidden);ST64(qr+16,wheel_quest_list);
+    ST64(category_list,0x7001cdbb58ull);ST32(category_list+0x2e8,2);
+    ST64(qhidden,0x7001cdbb58ull);ST8(qhidden+0x2c,0);
+    ST64(wheel_quest_list,0x7001cdbb58ull);ST8(wheel_quest_list+0x2c,1);
+    ST32(wheel_quest_list+0xc0,1);ST32(wheel_quest_list+0x2e8,2);
+    ST32(wheel_quest_list+0x288,4);ST64(wheel_quest_list+0x290,qcols);ST64(qcols+16,qcol);ST32(qcol+0x29c,14);
+    *(float*)(wheel_quest_list+0x304)=-260;*(float*)(wheel_quest_list+0x308)=-30;
+    *(float*)(qcol+0x2f8)=-243;*(float*)(qcol+0x300)=243;
+    *(float*)(qcol+0x2fc)=-203;*(float*)(qcol+0x304)=203;
+    *(float*)(wheel_quest_list+0x2b4)=0;*(float*)(wheel_quest_list+0x2bc)=1200;
+    *(float*)(wheel_quest_list+0x2d4)=350;ST32(wheel_quest_list+0x30c,6);ST32(wheel_quest_list+0x310,6);
+    point[0]=-260;point[1]=0;wheel=-1;frame++;cpu.x[0]=manager;
+    assert(quest_scroll(&cpu,screen)&&quest_view_scrolls==1&&cpu.x[0]==manager);
+    assert(*(float*)(wheel_quest_list+0x2d4)==420&&LD32(wheel_quest_list+0x30c)==6&&LD32(wheel_quest_list+0x310)==6);
+    assert(quest_scroll(&cpu,screen)&&quest_view_scrolls==1);
+    wheel=-100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==1200);
+    wheel=100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==0);
+    point[0]=300;wheel=-1;frame++;assert(!quest_scroll(&cpu,screen)&&wheel==-1);
+    point[0]=-260;pointer_keyboard_input=true;frame++;assert(!quest_scroll(&cpu,screen));
+    pointer_keyboard_input=false;ST32(screen+0x3a48,0);frame++;assert(!quest_scroll(&cpu,screen));
+    pc_cursor_reset();assert(quest_scroll_frame==UINT64_MAX);
+    // Middle-click is native Sort only in a sortable pointer menu. Releases
+    // clear it even after a settings change; gameplay bindings stay untouched.
+    test_menu_ui=true;ST32(g_site.pause_state,2);ST32(screen+0x3a48,0);ST64(sa+8*0x2e,screen);
+    for(unsigned i=0x30;i<=0x3a;i++)ST64(sa+8*i,0);
+    ST32(sm+0x28,0x40);pc_cursor_frame();assert(pc_cursor_sort_active());
+    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;event.button.button=SDL_BUTTON_MIDDLE;
+    assert(pc_cursor_event(&event)&&(pc_cursor_buttons(0)&(1ull<<3)));
+    assert(!(pc_cursor_buttons(0)&1));
+    event.type=SDL_EVENT_MOUSE_BUTTON_UP;assert(pc_cursor_event(&event));assert(!(pc_cursor_buttons(0)&(1ull<<3)));
+    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;assert(pc_cursor_event(&event));
+    g_settings.pc_cursor=false;assert(!(pc_cursor_buttons(0)&(1ull<<3)));
+    event.type=SDL_EVENT_MOUSE_BUTTON_UP;assert(pc_cursor_event(&event));
+    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;assert(!pc_cursor_event(&event));
+    g_settings.pc_cursor=true;ST32(screen+0x3a48,1);pc_cursor_frame();assert(!pc_cursor_sort_active());
+    assert(!pc_cursor_event(&event));
+    ST32(screen+0x3a48,0);ST64(sa+8*0x34,modal);ST8(modal+0xfe,2);pc_cursor_frame();assert(!pc_cursor_sort_active());
+    ST64(sa+8*0x34,0);pc_cursor_frame();assert(pc_cursor_sort_active());
+    // Sale grids sort; purchase lists and quantity dialogs do not.
+    ST32(g_site.pause_state,0);ST8(screen+0xfe,0);test_menu_ui=false;
+    ST64(sa+8*0x3b,modal);ST8(modal+0xfe,2);ST64(modal,0x7001ceb808ull);
+    uint64_t shop_name=GUEST_LO+0xa700;strcpy((char*)(uintptr_t)shop_name,"ShopBtnList_00");ST64(modal+0xd0,shop_name);
+    ST32(modal+0x388,1);ST64(modal+0x390,qr);ST64(qr,wheel_quest_list);ST64(wheel_quest_list,0x7001cdbb58ull);
+    pc_cursor_frame();assert(pc_cursor_sort_active());
+    quantity_until=now+100;assert(!pc_cursor_sort_active());quantity_until=0;
+    ST64(wheel_quest_list,0x7001cfcf78ull);pc_cursor_frame();assert(!pc_cursor_sort_active());
+    ST64(sa+8*0x3b,0);ST32(g_site.pause_state,2);ST8(screen+0xfe,2);test_menu_ui=true;
+    pc_cursor_frame();assert(pc_cursor_sort_active());
+    assert(pc_cursor_event(&event));event.type=SDL_EVENT_WINDOW_FOCUS_LOST;pc_cursor_event(&event);
+    assert(!sort_held&&!(pc_cursor_buttons(0)&(1ull<<3)));
+    event.type=SDL_EVENT_MOUSE_BUTTON_UP;event.button.button=SDL_BUTTON_MIDDLE;assert(pc_cursor_event(&event));
+    pc_cursor_reset();assert(!sort_available&&!sort_held&&!sort_mouse_reserved);
+    puts("PASS: Middle-click sort/menu gates/release/focus/reset; Adventure Log viewport wheel/bounds/selection preservation/input ownership; DLC wheel/drag/page bounds/arrows/footer actions/modal ownership/reset; Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, setting gate and reboot reset (synthetic host state).");
 #ifdef _WIN32
     VirtualFree(vt_memory,0,MEM_RELEASE);
     VirtualFree(memory,0,MEM_RELEASE);

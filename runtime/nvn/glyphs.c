@@ -16,6 +16,7 @@
 //
 // SAVAGEWIND_GLYPH_DUMP=1 saves each sheet as uploaded, the original beside it (build/glyph_sheet_<n>.pgm, bottom-up).
 #include <math.h>
+#include "pc_cursor.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -522,6 +523,7 @@ uint32_t glyphs_generation(void) {
     if (k == ICONS_KEYBOARD) {
         for (int i = 0; i < BIND_KEY_COUNT; i++) h = (h ^ (uint16_t)g_bind_key[i]) * 16777619u;
         h = (h ^ g_settings.mouse_camera) * 16777619u;
+        h = (h ^ pc_cursor_sort_active()) * 16777619u;
     } else {
         for (int i = 0; i < BIND_PAD_COUNT; i++) h = (h ^ (uint16_t)g_bind_pad[i]) * 16777619u;
     }
@@ -546,7 +548,9 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
     }
     if (kind == ICONS_KEYBOARD) {
         switch (m.kind) {
-        case G_BUTTON: key_icon(c, b, g_bind_key[m.arg]); return true;
+        case G_BUTTON:
+            key_icon(c, b, m.arg==BIND_Y&&pc_cursor_sort_active()?BIND_MOUSE+SDL_BUTTON_MIDDLE:g_bind_key[m.arg]);
+            return true;
         case G_DPAD:
             if (!(m.arg & (m.arg - 1))) key_icon(c, b, g_bind_key[k_dpad_slot[dir_index(m.arg)]]);
             else keys_icon(c, b, k_dpad_slot, m.arg);
