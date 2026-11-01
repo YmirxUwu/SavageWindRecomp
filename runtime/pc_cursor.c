@@ -1000,7 +1000,7 @@ static bool quest_focus(Cpu *c,uint64_t screen,uint64_t node) {
 }
 
 static bool quest_scroll(Cpu *c,uint64_t screen) {
-    if(!quest_list(screen)||LD32(screen+0x3a48)!=1||pointer_keyboard_input)return false;
+    if(!quest_list(screen)||LD32(screen+0x3a48)!=2||pointer_keyboard_input)return false;
     extern uint64_t renderer_present_count(void);
     uint64_t frame=renderer_present_count();
     if(quest_scroll_frame==frame)return true;
@@ -1025,13 +1025,28 @@ static bool quest_scroll(Cpu *c,uint64_t screen) {
            point[0]<left||point[0]>right||point[1]<bottom||point[1]>top)continue;
         int scroll=atomic_exchange(&wheel,0);if(!scroll)return false;
         float current=*(float*)(list+0x2d4),minimum=*(float*)(list+0x2b4),maximum=*(float*)(list+0x2bc);
-        if(!isfinite(current)||!isfinite(minimum)||!isfinite(maximum)||maximum<minimum)return false;
-        float next=fminf(maximum,fmaxf(minimum,current-scroll*70.f)),delta=next-current;
+        uint64_t view=LD64(column+0x10);unsigned rows=LD32(column+0x29c);
+        if(!ptr(view)||rows>10000)return false;
+        float row_height=*(float*)(view+0x34),stride=*(float*)(view+0x44),height=top-bottom;
+        if(!isfinite(current)||!isfinite(minimum)||!isfinite(maximum)||maximum<minimum||
+           !isfinite(row_height)||!isfinite(stride)||row_height<=0||stride<=0||height<=0)return false;
+        // Categories share a virtual canvas, including space reserved for
+        // empty preceding categories. Ask the game for this category's first
+        // page origin; zero and the global extent are not its scroll bounds.
+        float origin[2]={NAN,NAN};Cpu saved_origin=*c;
+        c->x[0]=list;c->x[1]=0;c->x[2]=category;c->x[3]=(uintptr_t)origin;
+        guest_call(c,0x7000d6ea78);*c=saved_origin;
+        if(!isfinite(origin[1]))return false;
+        minimum=fmaxf(minimum,-origin[1]);
+        float content=row_height+(rows-1)*stride;
+        maximum=fmaxf(minimum,fminf(maximum,minimum+fmaxf(0,content-height)));
+        float next=fminf(maximum,fmaxf(minimum,current-scroll*stride)),delta=next-current;
         quest_scroll_frame=frame;hover_leave();hover_until=0;
         if(delta) {
-            // Native free scrolling updates the viewport and recycled row
-            // positions without walking the quest selection or confirming it.
-            Cpu saved=*c;c->x[0]=list;c->x[1]=2;memcpy(&c->v[0],&delta,4);
+            // Queue the native scroll for its own tick, as stick scrolling does.
+            // Immediate mode rebuilds row layouts while the cursor manager is
+            // still traversing them, which can displace or hide the list.
+            Cpu saved=*c;c->x[0]=list;c->x[1]=0;memcpy(&c->v[0],&delta,4);
             guest_call(c,0x7000d6e8e0);*c=saved;
         }
         return true;

@@ -32,6 +32,7 @@ static unsigned page_changes,dlc_pages;
 static uint64_t dlc_test_list;
 static uint64_t wheel_quest_list;
 static unsigned quest_view_scrolls;
+static float quest_test_origin=784;
 static uint64_t quick_test_screen,quick_test_list;
 static unsigned quick_test_moves;
 static uint64_t navigation;
@@ -43,11 +44,15 @@ void guest_call(Cpu *cpu,uint64_t address){
     if(address==0x7000e30700ull){actions++;last_action=LD32(LD64(cpu->x[0])+0x36c0);}
     else if(address==0x7000e2eed8ull)refreshes++;
     else if(address==0x7000d671d4ull)scroll_updates++;
+    else if(address==0x7000d6ea78ull){
+        assert(cpu->x[0]==wheel_quest_list&&cpu->x[1]==0);
+        float *origin=(float*)(uintptr_t)cpu->x[3];origin[0]=0;origin[1]=-quest_test_origin;
+    }
     else if(address==0x7000d6e8e0ull){
-        assert(cpu->x[0]==wheel_quest_list&&cpu->x[1]==2);
+        assert(cpu->x[0]==wheel_quest_list&&cpu->x[1]==0);
         float delta;memcpy(&delta,&cpu->v[0],4);quest_view_scrolls++;
         *(float*)(wheel_quest_list+0x2d4)+=delta;
-        *(float*)(wheel_quest_list+0x2c4)=*(float*)(wheel_quest_list+0x2d4);
+        // Deferred scrolling changes only the target; the game tick moves rows.
         cpu->x[0]=0xdead; // the caller's CPU must be restored
     }
     else if(address==0x7000f6e2c8ull){assert(LD8(cpu->x[0]+0xfc)==1);cpu->x[0]=0;}
@@ -553,7 +558,7 @@ int main(void) {
     uint64_t qm=GUEST_LO+0x4000,category_list=GUEST_LO+0x5000;
     uint64_t qr=GUEST_LO+0xd000,qhidden=GUEST_LO+0xa000,qcols=GUEST_LO+0xc000,qcol=GUEST_LO+0xc200;
     wheel_quest_list=GUEST_LO+0xb000;
-    ST64(screen,0x7001cf9ad8ull);ST8(screen+0xfe,2);ST32(screen+0x3a48,1);
+    ST64(screen,0x7001cf9ad8ull);ST8(screen+0xfe,2);ST32(screen+0x3a48,2);
     ST32(screen+0x388,3);ST64(screen+0x390,qr);ST64(screen+0x3bb0,qm);ST64(qm+0x300,category_list);
     ST64(qr,category_list);ST64(qr+8,qhidden);ST64(qr+16,wheel_quest_list);
     ST64(category_list,0x7001cdbb58ull);ST32(category_list+0x2e8,2);
@@ -561,20 +566,40 @@ int main(void) {
     ST64(wheel_quest_list,0x7001cdbb58ull);ST8(wheel_quest_list+0x2c,1);
     ST32(wheel_quest_list+0xc0,1);ST32(wheel_quest_list+0x2e8,2);
     ST32(wheel_quest_list+0x288,4);ST64(wheel_quest_list+0x290,qcols);ST64(qcols+16,qcol);ST32(qcol+0x29c,14);
+    uint64_t qview=GUEST_LO+0xe800;ST64(qcol+0x10,qview);
+    *(float*)(qview+0x34)=126;*(float*)(qview+0x44)=70;
     *(float*)(wheel_quest_list+0x304)=-260;*(float*)(wheel_quest_list+0x308)=-30;
     *(float*)(qcol+0x2f8)=-243;*(float*)(qcol+0x300)=243;
     *(float*)(qcol+0x2fc)=-203;*(float*)(qcol+0x304)=203;
-    *(float*)(wheel_quest_list+0x2b4)=0;*(float*)(wheel_quest_list+0x2bc)=1200;
-    *(float*)(wheel_quest_list+0x2d4)=350;ST32(wheel_quest_list+0x30c,6);ST32(wheel_quest_list+0x310,6);
+    *(float*)(wheel_quest_list+0x2b4)=0;*(float*)(wheel_quest_list+0x2bc)=3000;
+    *(float*)(wheel_quest_list+0x2c4)=1134;*(float*)(wheel_quest_list+0x2d4)=1134;ST32(wheel_quest_list+0x30c,6);ST32(wheel_quest_list+0x310,6);
     point[0]=-260;point[1]=0;wheel=-1;frame++;cpu.x[0]=manager;
     assert(quest_scroll(&cpu,screen)&&quest_view_scrolls==1&&cpu.x[0]==manager);
-    assert(*(float*)(wheel_quest_list+0x2d4)==420&&LD32(wheel_quest_list+0x30c)==6&&LD32(wheel_quest_list+0x310)==6);
+    assert(*(float*)(wheel_quest_list+0x2c4)==1134);
+    assert(*(float*)(wheel_quest_list+0x2d4)==1204&&LD32(wheel_quest_list+0x30c)==6&&LD32(wheel_quest_list+0x310)==6);
     assert(quest_scroll(&cpu,screen)&&quest_view_scrolls==1);
-    wheel=-100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==1200);
-    wheel=100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==0);
+    wheel=-100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==1414);
+    wheel=100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==784);
+    // Fourteen rows at 70px pitch with 126px cells occupy 1036px;
+    // a 406px viewport ends 630px after the native category origin.
+    wheel=-100;frame++;assert(quest_scroll(&cpu,screen));
+    unsigned end_calls=quest_view_scrolls;wheel=-100;frame++;
+    assert(quest_scroll(&cpu,screen)&&quest_view_scrolls==end_calls);
+    ST32(qcol+0x29c,3);wheel=-1;frame++;assert(quest_scroll(&cpu,screen));
+    assert(*(float*)(wheel_quest_list+0x2d4)==784); // short lists cannot scroll
+    ST32(qcol+0x29c,14);*(float*)(wheel_quest_list+0x2b4)=900;
+    wheel=-100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==1530);
+    wheel=100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==900);
+    // Memories starts after three reserved category slots, not at zero.
+    *(float*)(wheel_quest_list+0x2b4)=0;quest_test_origin=1176;
+    ST32(category_list+0x2e8,3);ST32(wheel_quest_list+0x2e8,3);ST64(qcols+24,qcol);ST32(qcol+0x29c,18);
+    wheel=-100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==2086);
+    wheel=100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==1176);
     point[0]=300;wheel=-1;frame++;assert(!quest_scroll(&cpu,screen)&&wheel==-1);
     point[0]=-260;pointer_keyboard_input=true;frame++;assert(!quest_scroll(&cpu,screen));
-    pointer_keyboard_input=false;ST32(screen+0x3a48,0);frame++;assert(!quest_scroll(&cpu,screen));
+    // The loaded Adventure Log is page 2; page 1 is an intermediate state.
+    pointer_keyboard_input=false;ST32(screen+0x3a48,1);frame++;assert(!quest_scroll(&cpu,screen));
+    ST32(screen+0x3a48,0);frame++;assert(!quest_scroll(&cpu,screen));
     pc_cursor_reset();assert(quest_scroll_frame==UINT64_MAX);
     // Middle-click is native Sort only in a sortable pointer menu. Releases
     // clear it even after a settings change; gameplay bindings stay untouched.
